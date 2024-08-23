@@ -1,0 +1,8 @@
+build
+make_helpers
+pre_build
+.vscode
+*.log
+.vs
+x64
+include_juce_*
