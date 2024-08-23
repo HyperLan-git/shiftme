@@ -4,6 +4,7 @@
 
 #include "PluginEditor.hpp"
 
+// This must be odd (it seems)
 constexpr int MAX_WINDOW = 63;
 
 constexpr float pi = juce::MathConstants<float>::pi,
@@ -47,10 +48,12 @@ class ShiftMeAudioProcessor : public juce::AudioProcessor {
    private:
     juce::AudioParameterFloat* frequency;
 
+    double theta = 0;
+
     float hWindow[MAX_WINDOW] = {};
 
-    float block[MAX_WINDOW * 2] = {};
-    float block2[MAX_WINDOW] = {};
+    float block_l[MAX_WINDOW * 2] = {};
+    float block_r[MAX_WINDOW * 2] = {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ShiftMeAudioProcessor)
 };

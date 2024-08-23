@@ -110,7 +110,6 @@ bool ShiftMeAudioProcessor::isBusesLayoutSupported(
 }
 #endif
 
-float theta = pi / 2;
 void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                          juce::MidiBuffer& midiMessages) {
     juce::ScopedNoDenormals noDenormals;
@@ -130,34 +129,43 @@ void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     float* l = buffer.getWritePointer(0);
     float* r = buffer.getWritePointer(1);
 
-    // The entirety of block is delayed by MAX_WINDOW samples
-    std::memmove(block, block + (samples % MAX_WINDOW), BLKSIZE);
+    // The entirety of this block is delayed by MAX_WINDOW samples
+    std::memmove(block_l, block_l + (samples % MAX_WINDOW), BLKSIZE);
+    std::memmove(block_r, block_r + (samples % MAX_WINDOW), BLKSIZE);
     for (int sample = 0; sample < samples; sample += MAX_WINDOW) {
         if (sample + MAX_WINDOW >= samples) {
-            std::memmove(block, block + MAX_WINDOW, BLKSIZE);
-            std::memcpy(block + MAX_WINDOW, l + sample,
+            std::memmove(block_l, block_l + MAX_WINDOW, BLKSIZE);
+            std::memcpy(block_l + MAX_WINDOW, l + sample,
+                        (samples % MAX_WINDOW) * sizeof(float));
+
+            std::memmove(block_r, block_r + MAX_WINDOW, BLKSIZE);
+            std::memcpy(block_r + MAX_WINDOW, r + sample,
                         (samples % MAX_WINDOW) * sizeof(float));
         } else {
-            if (sample != 0) std::memmove(block, block + MAX_WINDOW, BLKSIZE);
-            std::memcpy(block + MAX_WINDOW, l + sample, BLKSIZE);
+            if (sample > 0) {
+                std::memmove(block_l, block_l + MAX_WINDOW, BLKSIZE);
+                std::memmove(block_r, block_r + MAX_WINDOW, BLKSIZE);
+            }
+            std::memcpy(block_l + MAX_WINDOW, l + sample, BLKSIZE);
+            std::memcpy(block_r + MAX_WINDOW, r + sample, BLKSIZE);
         }
 
         for (int i = 0; i < MAX_WINDOW && i + sample < samples; i++) {
-            std::memcpy(block2, block + i, BLKSIZE);
-            juce::FloatVectorOperations::multiply(block2, this->hWindow,
-                                                  MAX_WINDOW);
-            // Acc is the signal phase shifted by pi/2
-            float acc = 0;
+            // This is the signal phase shifted by pi/2
+            float acc_l = 0;
+            float acc_r = 0;
             for (int j = 0; j < MAX_WINDOW; j++) {
-                acc += block2[j];
+                acc_l += block_l[i + j] * this->hWindow[j];
+                acc_r += block_r[i + j] * this->hWindow[j];
             }
+
+            // Now we just have to combine both
             const float I = std::cos(theta + dphi * (sample + i)),
                         Q = std::sin(theta + dphi * (sample + i));
 
             // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
-            const float del = block[i + MAX_WINDOW / 2];
-            l[sample + i] = I * del - acc * Q;
-            r[sample + i] = I * del - acc * Q;
+            l[sample + i] = I * block_l[i + MAX_WINDOW / 2] - acc_l * Q;
+            r[sample + i] = I * block_r[i + MAX_WINDOW / 2] - acc_r * Q;
         }
     }
 }
