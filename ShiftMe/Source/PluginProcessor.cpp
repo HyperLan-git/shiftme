@@ -14,12 +14,14 @@ ShiftMeAudioProcessor::ShiftMeAudioProcessor()
 #endif
       ,
       frequency(new juce::AudioParameterFloat({"frequency", 1}, "Frequency",
-                                              -20000, 20000, 0)) {
+                                              -20000, 20000, 0)),
+      antialiasing(new juce::AudioParameterBool({"antialiasing", 1}, "Anti aliasing", false)) {
     this->addParameter(frequency);
+    this->addParameter(antialiasing);
 
     // TODO see Parks-McCellan algo FIR Hilbert
     for (int i = 1; i <= MAX_WINDOW / 2; i += 2) {
-        const float x = MAX_WINDOW / 2 - i + 1;
+        const float x = MAX_WINDOW / 2.f - i + 1;
         if (x == 0) {
             this->hWindow[i] = 0;
             continue;
@@ -30,7 +32,8 @@ ShiftMeAudioProcessor::ShiftMeAudioProcessor()
             (sn * sn / x);
     }
     for (int i = 1; i <= MAX_WINDOW / 2; i++) {
-        this->hWindow[MAX_WINDOW - i + 1] = -this->hWindow[i];
+        float v = -this->hWindow[i];
+        this->hWindow[MAX_WINDOW - i + 1] = v;
     }
 
     float acc = 0;
@@ -75,17 +78,26 @@ int ShiftMeAudioProcessor::getNumPrograms() { return 1; }
 
 int ShiftMeAudioProcessor::getCurrentProgram() { return 0; }
 
-void ShiftMeAudioProcessor::setCurrentProgram(int index) {}
+void ShiftMeAudioProcessor::setCurrentProgram(int index) {
+    (void)index;
+}
 
 const juce::String ShiftMeAudioProcessor::getProgramName(int index) {
+    (void)index;
     return {};
 }
 
 void ShiftMeAudioProcessor::changeProgramName(int index,
-                                              const juce::String& newName) {}
+                                              const juce::String& newName) {
+    (void)index;
+    (void)newName;
+}
 
 void ShiftMeAudioProcessor::prepareToPlay(double sampleRate,
-                                          int samplesPerBlock) {}
+                                          int samplesPerBlock) {
+    (void)sampleRate;
+    (void)samplesPerBlock;
+}
 
 void ShiftMeAudioProcessor::releaseResources() {}
 
@@ -112,18 +124,22 @@ bool ShiftMeAudioProcessor::isBusesLayoutSupported(
 
 void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                          juce::MidiBuffer& midiMessages) {
+    (void)midiMessages;
+
     juce::ScopedNoDenormals noDenormals;
     const int inputs = getTotalNumInputChannels();
     const int outputs = getTotalNumOutputChannels();
 
-    if (inputs < 2) return;
+    if (inputs < 2 || outputs != inputs) return;
 
-    const int samples = buffer.getNumSamples(), rate = getSampleRate();
+    const int samples = buffer.getNumSamples();
+    const double rate = getSampleRate();
 
+    //TODO handle small block sizes
     constexpr int BLKSIZE = MAX_WINDOW * sizeof(float);
 
     const float shift = *frequency;
-    const float dphi = -shift * tpi / rate;
+    const double dphi = -shift * tpi / rate;
     theta += dphi * samples;
 
     float* l = buffer.getWritePointer(0);
@@ -155,17 +171,27 @@ void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             float acc_l = 0;
             float acc_r = 0;
             for (int j = 0; j < MAX_WINDOW; j++) {
-                acc_l += block_l[i + j] * this->hWindow[j];
-                acc_r += block_r[i + j] * this->hWindow[j];
+                acc_l += block_l[i + j / 2 + MAX_WINDOW / 4] * this->hWindow[j];
+                acc_r += block_r[i + j / 2 + MAX_WINDOW / 4] * this->hWindow[j];
             }
 
             // Now we just have to combine both
-            const float I = std::cos(theta + dphi * (sample + i)),
-                        Q = std::sin(theta + dphi * (sample + i));
+            const float I = (float)std::cos(theta + dphi * (sample + i)),
+                        Q = (float)std::sin(theta + dphi * (sample + i));
 
             // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
             l[sample + i] = I * block_l[i + MAX_WINDOW / 2] - acc_l * Q;
             r[sample + i] = I * block_r[i + MAX_WINDOW / 2] - acc_r * Q;
+        }
+        //TODO WIP
+        if (*antialiasing) {
+            std::memset(block_l_aa, 0, sizeof(float) * 4 * MAX_WINDOW);
+            std::memset(block_r_aa, 0, sizeof(float) * 4 * MAX_WINDOW);
+            for (int i = 0; i < MAX_WINDOW && i + sample < samples; i++) {
+                block_l_aa[i * 2] = l[sample + i];
+                block_r_aa[i * 2] = r[sample + i];
+            }
+            //l_aa.processBlock()
         }
     }
 }
@@ -176,10 +202,15 @@ juce::AudioProcessorEditor* ShiftMeAudioProcessor::createEditor() {
     return new ShiftMeAudioProcessorEditor(*this);
 }
 
-void ShiftMeAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {}
+void ShiftMeAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {
+    (void)destData;
+}
 
 void ShiftMeAudioProcessor::setStateInformation(const void* data,
-                                                int sizeInBytes) {}
+                                                int sizeInBytes) {
+    (void)data;
+    (void)sizeInBytes;
+}
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() {
     return new ShiftMeAudioProcessor();
