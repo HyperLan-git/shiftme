@@ -4,6 +4,10 @@
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1">
   <MAINGROUP id="BNIKfW" name="ShiftMe">
     <GROUP id="{2CD5D2A4-FDF6-6EF5-BE97-234DD72006F2}" name="Source">
+      <FILE id="EgWySp" name="BoolParamListener.cpp" compile="1" resource="0"
+            file="Source/BoolParamListener.cpp"/>
+      <FILE id="liBS9f" name="BoolParamListener.hpp" compile="0" resource="0"
+            file="Source/BoolParamListener.hpp"/>
       <FILE id="kb2ckx" name="BiquadFilter.cpp" compile="1" resource="0"
             file="Source/BiquadFilter.cpp"/>
       <FILE id="z6s8eS" name="BiquadFilter.hpp" compile="0" resource="0"

@@ -6,7 +6,7 @@
 #include "BiquadFilter.hpp"
 
 // This must be odd (it seems)
-constexpr int MAX_WINDOW = 15;
+constexpr int MAX_WINDOW = 255;
 
 constexpr float pi = juce::MathConstants<float>::pi,
                 tpi = juce::MathConstants<float>::twoPi;
@@ -46,24 +46,25 @@ class ShiftMeAudioProcessor : public juce::AudioProcessor {
 
     inline juce::AudioParameterFloat* getFrequencyParam() { return frequency; }
     inline juce::AudioParameterBool* getAliasingParam() { return antialiasing; }
+    inline juce::AudioParameterBool* getPhaseParam() { return phaseMode; }
 
    private:
+    void processAntialiased(juce::AudioBuffer<float>& buffer);
+
     juce::AudioParameterFloat* frequency;
-    juce::AudioParameterFloat* phase;
     juce::AudioParameterBool* antialiasing;
+    juce::AudioParameterBool* phaseMode;
 
     double theta = 0;
 
     float hWindow[MAX_WINDOW] = {};
 
-    BiquadFilter l_aa, r_aa;
-    struct SOState l_s = {}, r_s = {};
+    BiquadFilter aa;
+    BiquadFilter hp;
+    struct SOState l_s_aa = {}, r_s_aa = {}, l_s_hp = {}, r_s_hp = {};
 
-    float block_l[MAX_WINDOW * 2] = {};
-    float block_r[MAX_WINDOW * 2] = {};
-
-    float block_l_aa[MAX_WINDOW * 4] = {};
-    float block_r_aa[MAX_WINDOW * 4] = {};
+    float block_l[MAX_WINDOW * 4] = {};
+    float block_r[MAX_WINDOW * 4] = {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ShiftMeAudioProcessor)
 };

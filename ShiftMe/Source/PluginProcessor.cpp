@@ -13,33 +13,34 @@ ShiftMeAudioProcessor::ShiftMeAudioProcessor()
               )
 #endif
       ,
-      frequency(new juce::AudioParameterFloat({"frequency", 1}, "Frequency",
+      frequency(new juce::AudioParameterFloat({"value", 1}, "Shift value",
                                               -20000, 20000, 0)),
-      antialiasing(new juce::AudioParameterBool({"antialiasing", 1}, "Anti aliasing", false)) {
+      antialiasing(new juce::AudioParameterBool({"antialiasing", 1},
+                                                "Anti aliasing", false)),
+      phaseMode(new juce::AudioParameterBool({"phase mode", 1}, "Phase mode",
+                                             false)) {
     this->addParameter(frequency);
+    this->addParameter(phaseMode);
     this->addParameter(antialiasing);
 
     // TODO see Parks-McCellan algo FIR Hilbert
-    for (int i = 1; i <= MAX_WINDOW / 2; i += 2) {
-        const float x = MAX_WINDOW / 2.f - i + 1;
+    for (int i = 0; i <= MAX_WINDOW / 2; i += 2) {
+        const float x = (MAX_WINDOW - 1) / 2.f - i;
         if (x == 0) {
             this->hWindow[i] = 0;
             continue;
         }
-        float sn = std::sin(.5f * pi * x);
-        this->hWindow[i] =
-            -(0.54f - 0.46f * std::cos(2 * pi * i / (MAX_WINDOW - 1))) *
-            (sn * sn / x);
+        this->hWindow[i] = -(.42f - .5f * std::cos(tpi * i / (MAX_WINDOW - 1)) +
+                             .08f * std::cos(2 * tpi * i / (MAX_WINDOW - 1))) *
+                           (.630828f / x);
     }
-    for (int i = 1; i <= MAX_WINDOW / 2; i++) {
+    for (int i = 0; i <= MAX_WINDOW / 2; i += 2) {
         float v = -this->hWindow[i];
-        this->hWindow[MAX_WINDOW - i + 1] = v;
+        this->hWindow[MAX_WINDOW - i - 1] = v;
     }
 
-    float acc = 0;
-    for (int i = 0; i < MAX_WINDOW; i++) {
-        acc += this->hWindow[i];
-    }
+    this->aa.setParameters(LOWPASS, {22050, .707, 0});
+    this->hp.setParameters(HIGHPASS, {0, .707, 0});
 }
 
 ShiftMeAudioProcessor::~ShiftMeAudioProcessor() {}
@@ -78,9 +79,7 @@ int ShiftMeAudioProcessor::getNumPrograms() { return 1; }
 
 int ShiftMeAudioProcessor::getCurrentProgram() { return 0; }
 
-void ShiftMeAudioProcessor::setCurrentProgram(int index) {
-    (void)index;
-}
+void ShiftMeAudioProcessor::setCurrentProgram(int index) { (void)index; }
 
 const juce::String ShiftMeAudioProcessor::getProgramName(int index) {
     (void)index;
@@ -95,8 +94,9 @@ void ShiftMeAudioProcessor::changeProgramName(int index,
 
 void ShiftMeAudioProcessor::prepareToPlay(double sampleRate,
                                           int samplesPerBlock) {
-    (void)sampleRate;
     (void)samplesPerBlock;
+    this->aa.setSampleRate((int)sampleRate * 2);
+    this->hp.setSampleRate((int)sampleRate);
 }
 
 void ShiftMeAudioProcessor::releaseResources() {}
@@ -122,6 +122,84 @@ bool ShiftMeAudioProcessor::isBusesLayoutSupported(
 }
 #endif
 
+void ShiftMeAudioProcessor::processAntialiased(
+    juce::AudioBuffer<float>& buffer) {
+    const int samples = buffer.getNumSamples();
+    const double rate = getSampleRate();
+
+    constexpr int BLKSIZE = MAX_WINDOW * sizeof(float), WINSZ = MAX_WINDOW * 2;
+
+    const float shift = *frequency;
+    const double dphi = -shift * tpi / rate;
+
+    const bool phase = *phaseMode;
+
+    if (phase)
+        theta = shift;
+    else
+        theta += dphi * samples;
+
+    const float Ic = (float)std::cos(theta), Qc = (float)std::sin(theta);
+
+    float* l = buffer.getWritePointer(0);
+    float* r = buffer.getWritePointer(1);
+
+    if (shift < 0 && -shift != this->hp.getParameters().f)
+        this->hp.setParameters(HIGHPASS, {-shift, .707, 0});
+
+    std::memmove(block_l, block_l + (samples % WINSZ), BLKSIZE * 2);
+    std::memmove(block_r, block_r + (samples % WINSZ), BLKSIZE * 2);
+    for (int sample = 0; sample < samples; sample += WINSZ) {
+        if (sample + WINSZ >= samples) {
+            std::memmove(block_l, block_l + WINSZ, BLKSIZE * 2);
+            std::memmove(block_r, block_r + WINSZ, BLKSIZE * 2);
+            for (int i = 0; i < samples % WINSZ; i++) {
+                block_r[WINSZ + (sample + i) * 2] = r[sample + i];
+                block_l[WINSZ + (sample + i) * 2] = l[sample + i];
+            }
+            aa.processBlock(block_r + WINSZ + sample * 2, 2 * samples % WINSZ,
+                            r_s_aa);
+            aa.processBlock(block_l + WINSZ + sample * 2, 2 * samples % WINSZ,
+                            l_s_aa);
+        } else {
+            if (sample > 0) {
+                std::memmove(block_l, block_l + WINSZ, BLKSIZE);
+                std::memmove(block_r, block_r + WINSZ, BLKSIZE);
+            }
+            for (int i = 0; i < MAX_WINDOW; i++) {
+                block_r[WINSZ + (sample + i) * 2] = r[sample + i];
+                block_l[WINSZ + (sample + i) * 2] = l[sample + i];
+            }
+            aa.processBlock(block_r + WINSZ + sample * 2, WINSZ, r_s_aa);
+            aa.processBlock(block_l + WINSZ + sample * 2, WINSZ, l_s_aa);
+        }
+
+        for (int i = 0; i < MAX_WINDOW && i + sample < samples; i++) {
+            // This is the signal phase shifted by pi/2
+            float acc_l = 0;
+            float acc_r = 0;
+            for (int j = 0; j < MAX_WINDOW; j += 2) {
+                acc_l += block_l[i * 2 + j + MAX_WINDOW / 2] * this->hWindow[j];
+                acc_r += block_r[i * 2 + j + MAX_WINDOW / 2] * this->hWindow[j];
+            }
+
+            // Now we just have to combine both
+            if (phase) {
+                // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
+                l[sample + i] = Ic * block_l[i + MAX_WINDOW] - acc_l * Qc;
+                r[sample + i] = Ic * block_r[i + MAX_WINDOW] - acc_r * Qc;
+            } else {
+                const float I = (float)std::cos(theta + dphi * (sample + i)),
+                            Q = (float)std::sin(theta + dphi * (sample + i));
+
+                // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
+                l[sample + i] = I * block_l[i + MAX_WINDOW] - acc_l * Q;
+                r[sample + i] = I * block_r[i + MAX_WINDOW] - acc_r * Q;
+            }
+        }
+    }
+}
+
 void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                          juce::MidiBuffer& midiMessages) {
     (void)midiMessages;
@@ -132,24 +210,41 @@ void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     if (inputs < 2 || outputs != inputs) return;
 
+    if (*antialiasing) {
+        // FIXME processAntialiased(buffer);
+        // return;
+    }
+
     const int samples = buffer.getNumSamples();
     const double rate = getSampleRate();
 
-    //TODO handle small block sizes
+    // TODO handle small block sizes
     constexpr int BLKSIZE = MAX_WINDOW * sizeof(float);
 
     const float shift = *frequency;
-    const double dphi = -shift * tpi / rate;
-    theta += dphi * samples;
+    const long double dphi = -shift * tpi / rate;
+
+    const bool phase = *phaseMode;
+
+    if (phase)
+        theta = shift;
+    else
+        theta += dphi * samples;
+
+    const float Ic = (float)std::cos(theta), Qc = (float)std::sin(theta);
 
     float* l = buffer.getWritePointer(0);
     float* r = buffer.getWritePointer(1);
 
     // The entirety of this block is delayed by MAX_WINDOW samples
+
+    // First we slide the last samples of the previous pass
     std::memmove(block_l, block_l + (samples % MAX_WINDOW), BLKSIZE);
     std::memmove(block_r, block_r + (samples % MAX_WINDOW), BLKSIZE);
     for (int sample = 0; sample < samples; sample += MAX_WINDOW) {
         if (sample + MAX_WINDOW >= samples) {
+            // For the last window
+            // We add only the remaining bytes
             std::memmove(block_l, block_l + MAX_WINDOW, BLKSIZE);
             std::memcpy(block_l + MAX_WINDOW, l + sample,
                         (samples % MAX_WINDOW) * sizeof(float));
@@ -158,6 +253,7 @@ void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             std::memcpy(block_r + MAX_WINDOW, r + sample,
                         (samples % MAX_WINDOW) * sizeof(float));
         } else {
+            // For each window we slide by the size of the window and insert
             if (sample > 0) {
                 std::memmove(block_l, block_l + MAX_WINDOW, BLKSIZE);
                 std::memmove(block_r, block_r + MAX_WINDOW, BLKSIZE);
@@ -171,27 +267,23 @@ void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             float acc_l = 0;
             float acc_r = 0;
             for (int j = 0; j < MAX_WINDOW; j++) {
-                acc_l += block_l[i + j / 2 + MAX_WINDOW / 4] * this->hWindow[j];
-                acc_r += block_r[i + j / 2 + MAX_WINDOW / 4] * this->hWindow[j];
+                acc_l += block_l[i + j] * this->hWindow[j];
+                acc_r += block_r[i + j] * this->hWindow[j];
             }
 
             // Now we just have to combine both
-            const float I = (float)std::cos(theta + dphi * (sample + i)),
-                        Q = (float)std::sin(theta + dphi * (sample + i));
+            if (phase) {
+                // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
+                l[sample + i] = Ic * block_l[MAX_WINDOW / 2 + i] - acc_l * Qc;
+                r[sample + i] = Ic * block_r[MAX_WINDOW / 2 + i] - acc_r * Qc;
+            } else {
+                const float I = (float)std::cos(theta + dphi * (sample + i)),
+                            Q = (float)std::sin(theta + dphi * (sample + i));
 
-            // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
-            l[sample + i] = I * block_l[i + MAX_WINDOW / 2] - acc_l * Q;
-            r[sample + i] = I * block_r[i + MAX_WINDOW / 2] - acc_r * Q;
-        }
-        //TODO WIP
-        if (*antialiasing) {
-            std::memset(block_l_aa, 0, sizeof(float) * 4 * MAX_WINDOW);
-            std::memset(block_r_aa, 0, sizeof(float) * 4 * MAX_WINDOW);
-            for (int i = 0; i < MAX_WINDOW && i + sample < samples; i++) {
-                block_l_aa[i * 2] = l[sample + i];
-                block_r_aa[i * 2] = r[sample + i];
+                // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
+                l[sample + i] = I * block_l[MAX_WINDOW / 2 + i] - acc_l * Q;
+                r[sample + i] = I * block_l[MAX_WINDOW / 2 + i] - acc_r * Q;
             }
-            //l_aa.processBlock()
         }
     }
 }
@@ -203,13 +295,19 @@ juce::AudioProcessorEditor* ShiftMeAudioProcessor::createEditor() {
 }
 
 void ShiftMeAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {
-    (void)destData;
+    juce::MemoryOutputStream stream(destData, true);
+    stream.writeFloat(frequency->convertTo0to1(*frequency));
+    stream.writeBool(*antialiasing);
+    stream.writeBool(*phaseMode);
 }
 
 void ShiftMeAudioProcessor::setStateInformation(const void* data,
                                                 int sizeInBytes) {
-    (void)data;
-    (void)sizeInBytes;
+    juce::MemoryInputStream stream(data, static_cast<size_t>(sizeInBytes),
+                                   false);
+    frequency->setValueNotifyingHost(stream.readFloat());
+    antialiasing->setValueNotifyingHost(stream.readBool() ? 1 : 0);
+    phaseMode->setValueNotifyingHost(stream.readBool() ? 1 : 0);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() {
