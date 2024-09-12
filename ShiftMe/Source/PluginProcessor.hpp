@@ -49,8 +49,6 @@ class ShiftMeAudioProcessor : public juce::AudioProcessor {
     inline juce::AudioParameterBool* getPhaseParam() { return phaseMode; }
 
    private:
-    void processAntialiased(juce::AudioBuffer<float>& buffer);
-
     juce::AudioParameterFloat* frequency;
     juce::AudioParameterBool* antialiasing;
     juce::AudioParameterBool* phaseMode;
@@ -60,11 +58,10 @@ class ShiftMeAudioProcessor : public juce::AudioProcessor {
     float hWindow[MAX_WINDOW] = {};
 
     BiquadFilter aa;
-    BiquadFilter hp;
-    struct SOState l_s_aa = {}, r_s_aa = {}, l_s_hp = {}, r_s_hp = {};
+    struct SOState l_s_aa = {}, r_s_aa = {}, l_s2_aa = {}, r_s2_aa = {};
 
-    float block_l[MAX_WINDOW * 4] = {};
-    float block_r[MAX_WINDOW * 4] = {};
+    float block_l[MAX_WINDOW * 2] = {};
+    float block_r[MAX_WINDOW * 2] = {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ShiftMeAudioProcessor)
 };

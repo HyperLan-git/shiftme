@@ -39,8 +39,7 @@ ShiftMeAudioProcessor::ShiftMeAudioProcessor()
         this->hWindow[MAX_WINDOW - i - 1] = v;
     }
 
-    this->aa.setParameters(LOWPASS, {22050, .707, 0});
-    this->hp.setParameters(HIGHPASS, {0, .707, 0});
+    this->aa.setParameters(HIGHPASS, {0, .707, 0});
 }
 
 ShiftMeAudioProcessor::~ShiftMeAudioProcessor() {}
@@ -95,8 +94,7 @@ void ShiftMeAudioProcessor::changeProgramName(int index,
 void ShiftMeAudioProcessor::prepareToPlay(double sampleRate,
                                           int samplesPerBlock) {
     (void)samplesPerBlock;
-    this->aa.setSampleRate((int)sampleRate * 2);
-    this->hp.setSampleRate((int)sampleRate);
+    this->aa.setSampleRate((int)sampleRate);
 }
 
 void ShiftMeAudioProcessor::releaseResources() {}
@@ -122,84 +120,6 @@ bool ShiftMeAudioProcessor::isBusesLayoutSupported(
 }
 #endif
 
-void ShiftMeAudioProcessor::processAntialiased(
-    juce::AudioBuffer<float>& buffer) {
-    const int samples = buffer.getNumSamples();
-    const double rate = getSampleRate();
-
-    constexpr int BLKSIZE = MAX_WINDOW * sizeof(float), WINSZ = MAX_WINDOW * 2;
-
-    const float shift = *frequency;
-    const double dphi = -shift * tpi / rate;
-
-    const bool phase = *phaseMode;
-
-    if (phase)
-        theta = shift;
-    else
-        theta += dphi * samples;
-
-    const float Ic = (float)std::cos(theta), Qc = (float)std::sin(theta);
-
-    float* l = buffer.getWritePointer(0);
-    float* r = buffer.getWritePointer(1);
-
-    if (shift < 0 && -shift != this->hp.getParameters().f)
-        this->hp.setParameters(HIGHPASS, {-shift, .707, 0});
-
-    std::memmove(block_l, block_l + (samples % WINSZ), BLKSIZE * 2);
-    std::memmove(block_r, block_r + (samples % WINSZ), BLKSIZE * 2);
-    for (int sample = 0; sample < samples; sample += WINSZ) {
-        if (sample + WINSZ >= samples) {
-            std::memmove(block_l, block_l + WINSZ, BLKSIZE * 2);
-            std::memmove(block_r, block_r + WINSZ, BLKSIZE * 2);
-            for (int i = 0; i < samples % WINSZ; i++) {
-                block_r[WINSZ + (sample + i) * 2] = r[sample + i];
-                block_l[WINSZ + (sample + i) * 2] = l[sample + i];
-            }
-            aa.processBlock(block_r + WINSZ + sample * 2, 2 * samples % WINSZ,
-                            r_s_aa);
-            aa.processBlock(block_l + WINSZ + sample * 2, 2 * samples % WINSZ,
-                            l_s_aa);
-        } else {
-            if (sample > 0) {
-                std::memmove(block_l, block_l + WINSZ, BLKSIZE);
-                std::memmove(block_r, block_r + WINSZ, BLKSIZE);
-            }
-            for (int i = 0; i < MAX_WINDOW; i++) {
-                block_r[WINSZ + (sample + i) * 2] = r[sample + i];
-                block_l[WINSZ + (sample + i) * 2] = l[sample + i];
-            }
-            aa.processBlock(block_r + WINSZ + sample * 2, WINSZ, r_s_aa);
-            aa.processBlock(block_l + WINSZ + sample * 2, WINSZ, l_s_aa);
-        }
-
-        for (int i = 0; i < MAX_WINDOW && i + sample < samples; i++) {
-            // This is the signal phase shifted by pi/2
-            float acc_l = 0;
-            float acc_r = 0;
-            for (int j = 0; j < MAX_WINDOW; j += 2) {
-                acc_l += block_l[i * 2 + j + MAX_WINDOW / 2] * this->hWindow[j];
-                acc_r += block_r[i * 2 + j + MAX_WINDOW / 2] * this->hWindow[j];
-            }
-
-            // Now we just have to combine both
-            if (phase) {
-                // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
-                l[sample + i] = Ic * block_l[i + MAX_WINDOW] - acc_l * Qc;
-                r[sample + i] = Ic * block_r[i + MAX_WINDOW] - acc_r * Qc;
-            } else {
-                const float I = (float)std::cos(theta + dphi * (sample + i)),
-                            Q = (float)std::sin(theta + dphi * (sample + i));
-
-                // DELAY of MAX_WINDOW - MAX_WINDOW / 2 = MAX_WINDOW / 2
-                l[sample + i] = I * block_l[i + MAX_WINDOW] - acc_l * Q;
-                r[sample + i] = I * block_r[i + MAX_WINDOW] - acc_r * Q;
-            }
-        }
-    }
-}
-
 void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                          juce::MidiBuffer& midiMessages) {
     (void)midiMessages;
@@ -209,11 +129,6 @@ void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const int outputs = getTotalNumOutputChannels();
 
     if (inputs < 2 || outputs != inputs) return;
-
-    if (*antialiasing) {
-        // FIXME processAntialiased(buffer);
-        // return;
-    }
 
     const int samples = buffer.getNumSamples();
     const double rate = getSampleRate();
@@ -235,6 +150,17 @@ void ShiftMeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     float* l = buffer.getWritePointer(0);
     float* r = buffer.getWritePointer(1);
+
+    if (*antialiasing) {
+        if (shift < 0)
+            aa.setParameters(HIGHPASS, {50 - shift, .707f, 0});
+        else
+            aa.setParameters(LOWPASS, {22000 - shift, .707, 0});
+        aa.processBlock(l, samples, l_s_aa);
+        aa.processBlock(r, samples, r_s_aa);
+        aa.processBlock(l, samples, l_s2_aa);
+        aa.processBlock(r, samples, r_s2_aa);
+    }
 
     // The entirety of this block is delayed by MAX_WINDOW samples
 
