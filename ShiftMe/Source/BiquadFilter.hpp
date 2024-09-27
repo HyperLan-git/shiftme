@@ -25,6 +25,8 @@ struct SOState {
     float x1, x2, y1, y2;
 };
 
+typedef float* State;
+
 struct BiquadFilterCoefficients {
     bool operator==(BiquadFilterCoefficients other) const {
         return this->a0 == other.a0 && this->a1 == other.a1 &&
@@ -69,6 +71,10 @@ class BiquadFilter {
 
     // The state struct should be conserved between blocks of the same channel
     void processBlock(float* buffer, int size, struct SOState& state) const;
+
+    // Processes multiple times a block (state buffer has times*2+2 floats)
+    void processBlockMul(float* buffer, int size, State state,
+                         size_t times) const;
 
    private:
     void updateParameters();
